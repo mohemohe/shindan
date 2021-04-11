@@ -4,10 +4,12 @@ import (
 	"context"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/alexsasharegan/dotenv"
+	"github.com/antchfx/htmlquery"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/mattn/go-mastodon"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"time"
@@ -56,12 +58,50 @@ func loadEnv() Config {
 	return c
 }
 
+func httpClient() (*http.Client, error) {
+	cookie, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Jar: cookie,
+	}
+	return client, nil
+}
+
 func fetch(id string, name string) string {
 	uri := "https://shindanmaker.com/" + id
 
+	client, err := httpClient()
+	if err != nil {
+		log.Println("fetch: %v, error: %v", id, err)
+		return ""
+	}
+	res, err := client.Get(uri)
+	if err != nil {
+		log.Println("fetch: %v, error: %v", id, err)
+		return ""
+	}
+	defer res.Body.Close()
+	parsed, err := htmlquery.Parse(res.Body)
+	if err != nil {
+		log.Println("fetch: %v, error: %v", id, err)
+		return ""
+	}
+	tokenInput := htmlquery.FindOne(parsed, "//input[@name='_token']/@value")
+	hiddenNameInput := htmlquery.FindOne(parsed, "//input[@name='hiddenName']/@value")
+	if tokenInput == nil || hiddenNameInput == nil {
+		log.Println("fetch: %v, error: %v", id, "tokenInput == nil || hiddenNameInput == nil")
+		return ""
+	}
+	token := tokenInput.FirstChild.Data
+	hiddenName := hiddenNameInput.FirstChild.Data
+
 	form := url.Values{}
-	form.Add("u", name)
-	resp, err := http.Post(uri, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	form.Add("_token", token)
+	form.Add("name", name)
+	form.Add("hiddenName", hiddenName)
+	resp, err := client.Post(uri, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	if err != nil {
 		log.Println("fetch: %v, error: %v", id, err)
 		return ""
@@ -74,11 +114,11 @@ func fetch(id string, name string) string {
 
 	var text = ""
 	var selection *goquery.Selection
-	selection = doc.Find("#copy_text")
+	selection = doc.Find("#copy-textarea")
 	if len(selection.Nodes) != 0 {
 		text = selection.Text()
 	} else {
-		selection = doc.Find("#copy_text_140")
+		selection = doc.Find("#copy-textarea-140")
 		if len(selection.Nodes) != 0 {
 			text = selection.Text()
 		}
